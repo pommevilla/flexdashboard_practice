@@ -1,0 +1,239 @@
+---
+title: "Bigfoot Sightings in the Continental US since forever"
+runtime: shiny
+output: 
+  flexdashboard::flex_dashboard:
+    theme: 
+      version: 4
+      bootswatch: flatly
+    orientation: rows
+    vertical_layout: scroll
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(tidyverse)
+library(lubridate)
+library(geofacet)
+library(glue)
+library(ggtext)
+library(showtext)
+library(shinyWidgets)
+
+font_add_google("Patua One", "patua")
+showtext_auto()
+
+bigfoot <- read_csv("data/bigfoot.csv") %>% 
+  filter(!is.na(date), season != "Unknown") %>% 
+  mutate(classification = word(classification, -1)) %>% 
+  mutate(year = year(date)) 
+
+season_counts <- bigfoot %>% 
+  count(state, season, year) 
+
+season_counts <- season_counts %>% 
+  expand(state, season, full_seq(year, 1)) %>% 
+  rename(year = 3) %>% 
+  left_join(season_counts, by = c("state", "season", "year" = "year")) %>% 
+  replace_na(list(n = 0)) 
+
+total_counts <- season_counts %>% 
+  group_by(state, year) %>% 
+  summarize(n = sum(n)) %>% 
+  ungroup()
+
+nice_expansion <- expansion(add = 0, mult = c(0, 0))
+```
+
+Inputs {.sidebar data-width=300}
+=======================================================================
+
+Notes:
+
+* Year range filters all visuals
+
+* State selector only filters 2nd plot
+
+* Season selector only filters third plot
+
+```{r}
+earliest_year <- min(bigfoot$year, na.rm = TRUE)
+latest_year <- max(bigfoot$year, na.rm = TRUE)
+
+sliderInput(
+  "year_range",
+  label = h4("Select year range:"),
+  min = earliest_year,
+  max = latest_year,
+  value = c(earliest_year, latest_year)
+)
+```
+
+```{r}
+pickerInput(
+  "state_choice",
+  label = h4("Select state(s):"),
+  choices = state.name,
+  options = list(`actions-box` = TRUE),
+  multiple = TRUE,
+  selected = c("California", "Iowa")
+)
+```
+
+```{r}
+pickerInput(
+  "season_choice",
+  label = h4("Select season(s):"),
+  choices = unique(bigfoot$season),
+  options = list(`actions-box` = TRUE),
+  selected = unique(bigfoot$season),
+  multiple = TRUE
+)
+```
+
+```{r}
+uiOutput("export_data_UI")
+
+output$export_data_UI <- renderUI( {
+  downloadButton(
+    "export_filtered_data_button", 
+    label = "Export filtered data to csv", 
+    style = "width:100%;"
+  )
+})
+```
+
+```{r}
+output$export_filtered_data_button <- downloadHandler(
+  filename = function() {
+    paste0("bigfoot-filtered-", Sys.Date(), ".csv")
+  },
+  content = function(con) {
+    filtered_data <- year_state_counts %>% 
+      filter(between(year, year_selected()[1], year_selected()[2])) %>% 
+      filter(state %in% state_selected())
+    
+    write.csv(filtered_data, con, row.names = FALSE)
+  }
+)
+```
+
+
+```{r}
+state_selected <- reactive(input$state_choice)
+year_selected <- reactive(input$year_range)
+seasons_selected <- reactive(input$season_choice)
+```
+
+Plots
+=======================================================================
+
+Row 
+-----------------------------------------------------------------------
+
+### <!-- Geomfacet -->
+
+
+```{r}
+renderPlot({
+    
+  state_title <- glue("Total sightings by state between <span style='color: #0000FF'>{year_selected()[1]}</span> and <span style='color: #0000FF'>{year_selected()[2]}</span>")
+  
+  total_counts %>% 
+    filter(between(year, year_selected()[1], year_selected()[2])) %>% 
+    ggplot(aes(year, n)) +
+    geom_line(size = 1) + 
+    facet_geo(~ state, grid = "us_state_grid3") +
+    theme_light() +
+    theme(
+      panel.grid = element_blank(),
+      panel.background = element_rect(fill = "gray97"),
+      panel.border = element_rect(color = "black", fill = NA),
+      strip.background = element_rect(color = "black", fill = NA),
+      strip.text = element_text(color = "black"),
+      axis.text.x = element_blank(),
+      axis.title = element_blank(),
+      plot.title = element_textbox_simple(family = "patua", hjust = 1, size = 18),
+      legend.position = "bottom"
+    ) +
+    labs(
+      title = state_title,
+      fill = "Classification",
+    )}
+  
+)
+```
+
+
+Row 
+-----------------------------------------------------------------------
+
+### <!--  A plot... -->
+
+```{r}
+renderPlot({
+   time_title <- glue("Sightings by state <span style='color: #FF9200'>(filtered)</span> between <span style='color: #0000FF'>{year_selected()[1]}</span> and <span style='color: #0000FF'>{year_selected()[2]}</span>")
+
+  season_counts %>% 
+    filter(state %in% state_selected()) %>% 
+    filter(between(year, year_selected()[1], year_selected()[2])) %>% 
+    group_by(year, state) %>% 
+    summarize(n = sum(n)) %>% 
+    ungroup() %>% 
+    ggplot(aes(year, n, color = state)) +
+    geom_line(size = 2) +
+    theme_light() +
+    theme(
+      panel.background = element_blank(),
+      panel.grid.minor.x = element_blank(),
+      panel.grid.minor.y = element_blank(),
+      panel.grid.major.y = element_blank(),
+      # panel.border = element_rect(color = "black", fill = NA, size = 1.5),
+      panel.border = element_blank(),
+      plot.title = element_textbox_simple(family = "patua", hjust = 1, size = 18),
+      strip.text = element_text(size = 12)
+    ) +
+    scale_x_continuous(expand = nice_expansion) +
+    labs(
+      color = "State",
+      x = "Year",
+      y = "# Sightings",
+      title = time_title
+    )}
+
+)
+```
+
+### <!-- ...and another plot -->
+
+```{r}
+renderPlot({
+   season_title <- glue("Sightings by <span style='color: #FF9200'>season</span> between <span style='color: #0000FF'>{year_selected()[1]}</span> and <span style='color: #0000FF'>{year_selected()[2]}</span>")
+
+   season_counts %>% 
+    filter(season %in% seasons_selected()) %>% 
+    filter(between(year, year_selected()[1], year_selected()[2])) %>% 
+    group_by(season, year) %>% 
+    summarize(n = sum(n)) %>% 
+    ggplot(aes(year, n, color = season)) +
+    geom_line(size = 2) +
+    theme_light() +
+    theme(
+      panel.background = element_blank(),
+      panel.grid.minor.x = element_blank(),
+      panel.grid.minor.y = element_blank(),
+      panel.grid.major.y = element_blank(),
+      panel.border = element_blank(),
+      plot.title = element_textbox_simple(family = "patua", hjust = 0.5, size = 18)
+    ) +
+    scale_x_continuous(expand = nice_expansion) +
+    labs(
+      title = season_title,
+      color = "State",
+      x = "Year",
+      y = "# Sightings"
+    )}
+
+)
+
+```
